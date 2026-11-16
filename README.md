@@ -1,4 +1,4 @@
-# aarch64-laptop-linux
+# Linux for Snapdragon X2 Plus (X1P42100) Lenovo laptop 
 
 ## Getting the sources
 
