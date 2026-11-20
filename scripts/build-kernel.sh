@@ -10,6 +10,7 @@ let NPROC=$(nproc)-4
 # BUILDING
 cd ../kernel
 
+git apply ../configs/$PLATFORM/kernel.patch
 cp ../configs/$PLATFORM/kernel_defconfig arch/arm64/configs/custom_defconfig
 
 make -j$NPROC ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE custom_defconfig

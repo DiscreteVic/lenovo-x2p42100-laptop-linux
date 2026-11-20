@@ -1,0 +1,255 @@
+diff --git a/arch/arm64/boot/dts/qcom/kalambo-crd.dts b/arch/arm64/boot/dts/qcom/kalambo-crd.dts
+index 6d12bb19b4c8..9a19c5721112 100644
+--- a/arch/arm64/boot/dts/qcom/kalambo-crd.dts
++++ b/arch/arm64/boot/dts/qcom/kalambo-crd.dts
+@@ -17,7 +17,11 @@
+ 
+ / {
+ 	model = "Qualcomm Technologies, Inc. Kalambo CRD";
+-	compatible = "qcom,kalambo-crd", "qcom,kalambo";
++	/*
++	 * "qcom,mahua" fallback: ubwc_config (msm-mdss), qcom_pd_mapper and
++	 * memlat devfreq only match on the mahua/glymur machine compatible.
++	 */
++	compatible = "qcom,kalambo-crd", "qcom,kalambo", "qcom,mahua";
+ };
+ 
+ &tcsr {
+@@ -34,4 +38,55 @@ &tcsr {
+ 	vdda-qreftx1-0p9-supply = <&vreg_l1f_e1_0p82>;
+ 	vdda-refgen3-0p9-supply = <&vreg_l1f_e1_0p82>;
+ 	vdda-refgen3-1p2-supply = <&vreg_l4f_e1_1p08>;
+-};
+\ No newline at end of file
++};
++/*
++ * Lenovo laptop display: 1920x1200 eDP LCD with PMIC PWM backlight
++ * (DSDT: BacklightType 1, PMIC PWM 12-bit @ 2400 Hz), not the CRD's
++ * Samsung ATNA OLED with DPCD AUX backlight.
++ */
++/ {
++	backlight: backlight {
++		compatible = "pwm-backlight";
++		/* 2.4 kHz; LPG channel 3 is a guess (unverified from DSDT) */
++		pwms = <&pmh0101_pwm 3 416666>;
++	};
++};
++
++&pmh0101_pwm {
++	status = "okay";
++};
++
++&mdss_dp3 {
++	pinctrl-0 = <&edp_hpd_default>;
++	pinctrl-names = "default";
++
++	aux-bus {
++		panel {
++			compatible = "edp-panel";
++			backlight = <&backlight>;
++		};
++	};
++};
++
++&tlmm {
++	/* DSDT GPU0 power sequence muxes gpio119 to function 1 (edp0_hot) */
++	edp_hpd_default: edp-hpd-default-state {
++		pins = "gpio119";
++		function = "edp0_hot";
++		bias-disable;
++	};
++};
++
++/*
++ * Match the voltages Windows votes for \_SB.GPU0 in the DSDT (PEP G0MC):
++ *   LDO2_F_E1  880 mV  (eDP PHY vdda-phy; CRD DT has 832 mV)
++ *   LDO18_B_E0 1.2 V   (required by the display, off on Linux)
++ */
++&vreg_l2f_e1_0p83 {
++	regulator-min-microvolt = <880000>;
++	regulator-max-microvolt = <880000>;
++};
++
++&vreg_l18b_e0_1p2 {
++	regulator-always-on;
++};
+diff --git a/drivers/phy/qualcomm/phy-qcom-edp.c b/drivers/phy/qualcomm/phy-qcom-edp.c
+index f9a85ae8be62..9cce8eac6cbc 100644
+--- a/drivers/phy/qualcomm/phy-qcom-edp.c
++++ b/drivers/phy/qualcomm/phy-qcom-edp.c
+@@ -930,15 +930,20 @@ static int qcom_edp_com_configure_ssc_v8(const struct qcom_edp *edp)
+ 	u32 step1;
+ 	u32 step2;
+ 
++	/* step sizes from qmp_v8_dp_serdes_tbl_{rbr,hbr,hbr2,hbr3} */
+ 	switch (dp_opts->link_rate) {
+ 	case 1620:
+-	case 2700:
+-	case 8100:
+-		step1 = 0x5b;
++		step1 = 0x83;
+ 		step2 = 0x02;
+ 		break;
+ 
++	case 2700:
+ 	case 5400:
++		step1 = 0x18;
++		step2 = 0x02;
++		break;
++
++	case 8100:
+ 		step1 = 0x5b;
+ 		step2 = 0x02;
+ 		break;
+@@ -969,31 +974,55 @@ static int qcom_edp_com_configure_pll_v8(const struct qcom_edp *edp)
+ 	u32 code1_mode0;
+ 	u32 code2_mode0;
+ 	u32 hsclk_sel;
++	u32 vco_tune1_mode0;
++	u32 vco_tune2_mode0;
+ 
++	/*
++	 * Per-rate PLL values taken from the v8 DP PLL tables in
++	 * phy-qcom-qmp-combo.c (qmp_v8_dp_serdes_tbl_{rbr,hbr,hbr2,hbr3}).
++	 * The previous RBR/HBR values were the v6 ones and the PLL never
++	 * reached C_READY on Glymur/Kalambo.
++	 */
+ 	switch (dp_opts->link_rate) {
+ 	case 1620:
+ 		hsclk_sel = 0x5;
+-		dec_start_mode0 = 0x34;
+-		div_frac_start2_mode0 = 0xc0;
+-		div_frac_start3_mode0 = 0x0b;
+-		lock_cmp1_mode0 = 0x37;
+-		lock_cmp2_mode0 = 0x04;
+-		code1_mode0 = 0x71;
+-		code2_mode0 = 0x0c;
++		dec_start_mode0 = 0x54;
++		div_frac_start2_mode0 = 0x00;
++		div_frac_start3_mode0 = 0x06;
++		lock_cmp1_mode0 = 0x1c;
++		lock_cmp2_mode0 = 0x02;
++		code1_mode0 = 0x8d;
++		code2_mode0 = 0x27;
++		vco_tune1_mode0 = 0xfe;
++		vco_tune2_mode0 = 0x00;
+ 		break;
+ 
+ 	case 2700:
+-		hsclk_sel = 0x3;
+-		dec_start_mode0 = 0x34;
+-		div_frac_start2_mode0 = 0xc0;
+-		div_frac_start3_mode0 = 0x0b;
+-		lock_cmp1_mode0 = 0x07;
++		hsclk_sel = 0x4;
++		dec_start_mode0 = 0x46;
++		div_frac_start2_mode0 = 0x00;
++		div_frac_start3_mode0 = 0x05;
++		lock_cmp1_mode0 = 0x08;
+ 		lock_cmp2_mode0 = 0x07;
+-		code1_mode0 = 0x71;
+-		code2_mode0 = 0x0c;
++		code1_mode0 = 0xf6;
++		code2_mode0 = 0x20;
++		vco_tune1_mode0 = 0xae;
++		vco_tune2_mode0 = 0x02;
+ 		break;
+ 
+ 	case 5400:
++		hsclk_sel = 0x3;
++		dec_start_mode0 = 0x46;
++		div_frac_start2_mode0 = 0x00;
++		div_frac_start3_mode0 = 0x05;
++		lock_cmp1_mode0 = 0x10;
++		lock_cmp2_mode0 = 0x0e;
++		code1_mode0 = 0xf6;
++		code2_mode0 = 0x20;
++		vco_tune1_mode0 = 0xae;
++		vco_tune2_mode0 = 0x02;
++		break;
++
+ 	case 8100:
+ 		hsclk_sel = 0x2;
+ 		dec_start_mode0 = 0x4f;
+@@ -1003,6 +1032,8 @@ static int qcom_edp_com_configure_pll_v8(const struct qcom_edp *edp)
+ 		lock_cmp2_mode0 = 0x15;
+ 		code1_mode0 = 0x14;
+ 		code2_mode0 = 0x25;
++		vco_tune1_mode0 = 0xa0;
++		vco_tune2_mode0 = 0x01;
+ 		break;
+ 
+ 	default:
+@@ -1038,11 +1069,12 @@ static int qcom_edp_com_configure_pll_v8(const struct qcom_edp *edp)
+ 	writel(0x00, edp->pll + DP_QSERDES_V8_COM_VCO_TUNE_CTRL);
+ 	writel(0x1f, edp->pll + DP_QSERDES_V8_COM_BIAS_EN_CLKBUFLR_EN);
+ 	writel(0x00, edp->pll + DP_QSERDES_V8_COM_CORE_CLK_EN);
+-	writel(0xa0, edp->pll + DP_QSERDES_V8_COM_VCO_TUNE1_MODE0);
+-	writel(0x01, edp->pll + DP_QSERDES_V8_COM_VCO_TUNE2_MODE0);
++	writel(vco_tune1_mode0, edp->pll + DP_QSERDES_V8_COM_VCO_TUNE1_MODE0);
++	writel(vco_tune2_mode0, edp->pll + DP_QSERDES_V8_COM_VCO_TUNE2_MODE0);
+ 
+ 	writel(code1_mode0, edp->pll + DP_QSERDES_V8_COM_BIN_VCOCAL_CMP_CODE1_MODE0);
+ 	writel(code2_mode0, edp->pll + DP_QSERDES_V8_COM_BIN_VCOCAL_CMP_CODE2_MODE0);
++	writel(hsclk_sel, edp->pll + DP_QSERDES_V8_COM_BIN_VCOCAL_HSCLK_SEL_1);
+ 
+ 	return 0;
+ }
+@@ -1103,6 +1135,8 @@ static struct qcom_edp_phy_cfg glymur_phy_cfg = {
+ 	.dp_swing_pre_emph_cfg = &dp_phy_swing_pre_emph_cfg_v8,
+ 	.edp_swing_pre_emph_cfg = &edp_phy_swing_pre_emph_cfg,
+ 	.ver_ops = &qcom_edp_phy_ops_v8,
++	/* v8 DP PHY status lives at 0x114 (QSERDES_V8_DP_PHY_STATUS), not 0x0e0 */
++	.phy_status_reg = 0x114,
+ };
+ 
+ static int qcom_edp_phy_power_on(struct phy *phy)
+@@ -1115,8 +1149,10 @@ static int qcom_edp_phy_power_on(struct phy *phy)
+ 	u8 cfg1;
+ 
+ 	ret = edp->cfg->ver_ops->com_power_on(edp);
+-	if (ret)
++	if (ret) {
++		dev_err(edp->dev, "DEBUG: com_power_on (CMN_STATUS) failed: %d\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = edp->cfg->ver_ops->com_ldo_config(edp);
+ 	if (ret)
+@@ -1169,8 +1205,10 @@ static int qcom_edp_phy_power_on(struct phy *phy)
+ 	writel(0x09, edp->edp + DP_PHY_CFG);
+ 
+ 	ret = edp->cfg->ver_ops->com_resetsm_cntrl(edp);
+-	if (ret)
++	if (ret) {
++		dev_err(edp->dev, "DEBUG: com_resetsm_cntrl (C_READY) failed: %d\n", ret);
+ 		return ret;
++	}
+ 
+ 	writel(0x19, edp->edp + DP_PHY_CFG);
+ 	writel(0x1f, edp->tx0 + TXn_HIGHZ_DRVR_EN);
+@@ -1229,8 +1267,11 @@ static int qcom_edp_phy_power_on(struct phy *phy)
+ 
+ 	ret = readl_poll_timeout(edp->edp + (edp->cfg->phy_status_reg ?: DP_PHY_STATUS),
+ 				 val, val & BIT(1), 500, 10000);
+-	if (ret)
++	if (ret) {
++		dev_err(edp->dev, "DEBUG: PHY_STATUS @%#x failed: %d (val=%#x)\n",
++			edp->cfg->phy_status_reg ?: DP_PHY_STATUS, ret, val);
+ 		return ret;
++	}
+ 
+ 	clk_set_rate(edp->dp_link_hw.clk, edp->dp_opts.link_rate * 100000);
+ 	clk_set_rate(edp->dp_pixel_hw.clk, pixel_freq);
+diff --git a/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h b/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h
+index 008b17222a8d..dfbb2549ab1e 100644
+--- a/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h
++++ b/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h
+@@ -44,6 +44,7 @@
+ #define DP_QSERDES_V8_COM_CLK_SELECT			0x164
+ #define DP_QSERDES_V8_COM_CORE_CLK_EN			0x170
+ #define DP_QSERDES_V8_COM_CMN_CONFIG_1			0x174
++#define DP_QSERDES_V8_COM_BIN_VCOCAL_HSCLK_SEL_1	0x1a0
+ #define DP_QSERDES_V8_COM_SVS_MODE_CLK_SEL		0x180
+ #define DP_QSERDES_V8_COM_CLK_FWD_CONFIG_1		0x2f4
+ #define DP_QSERDES_V8_COM_CMN_STATUS			0x314
