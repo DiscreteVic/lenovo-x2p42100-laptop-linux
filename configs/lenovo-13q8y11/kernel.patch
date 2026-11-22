@@ -1,5 +1,5 @@
 diff --git a/arch/arm64/boot/dts/qcom/kalambo-crd.dts b/arch/arm64/boot/dts/qcom/kalambo-crd.dts
-index 6d12bb19b4c8..9a19c5721112 100644
+index 6d12bb19b4c8..3e9d763d2667 100644
 --- a/arch/arm64/boot/dts/qcom/kalambo-crd.dts
 +++ b/arch/arm64/boot/dts/qcom/kalambo-crd.dts
 @@ -17,7 +17,11 @@
@@ -15,7 +15,7 @@ index 6d12bb19b4c8..9a19c5721112 100644
  };
  
  &tcsr {
-@@ -34,4 +38,55 @@ &tcsr {
+@@ -34,4 +38,80 @@ &tcsr {
  	vdda-qreftx1-0p9-supply = <&vreg_l1f_e1_0p82>;
  	vdda-refgen3-0p9-supply = <&vreg_l1f_e1_0p82>;
  	vdda-refgen3-1p2-supply = <&vreg_l4f_e1_1p08>;
@@ -73,8 +73,33 @@ index 6d12bb19b4c8..9a19c5721112 100644
 +&vreg_l18b_e0_1p2 {
 +	regulator-always-on;
 +};
++
++/*
++ * Lenovo touchpad: ELAN06FA (DSDT \_SB.TPD3, enabled by TPDC = 0x04F3)
++ * on \_SB.I2C1 (= i2c0) at 0x15, HID descriptor at 0x01, IRQ on GPIO 3.
++ * The CRD's touchpad@2c with descriptor 0x20 does not exist here.
++ */
++&i2c0 {
++	/delete-node/ touchpad@2c;
++
++	touchpad@15 {
++		compatible = "hid-over-i2c";
++		reg = <0x15>;
++
++		hid-descr-addr = <0x1>;
++		interrupts-extended = <&tlmm 3 IRQ_TYPE_LEVEL_LOW>;
++
++		vdd-supply = <&vreg_misc_3p3>;
++		vddl-supply = <&vreg_l15b_e0_1p8>;
++
++		pinctrl-0 = <&tpad_default>;
++		pinctrl-names = "default";
++
++		wakeup-source;
++	};
++};
 diff --git a/drivers/phy/qualcomm/phy-qcom-edp.c b/drivers/phy/qualcomm/phy-qcom-edp.c
-index f9a85ae8be62..9cce8eac6cbc 100644
+index f9a85ae8be62..bfd344847de0 100644
 --- a/drivers/phy/qualcomm/phy-qcom-edp.c
 +++ b/drivers/phy/qualcomm/phy-qcom-edp.c
 @@ -930,15 +930,20 @@ static int qcom_edp_com_configure_ssc_v8(const struct qcom_edp *edp)
@@ -204,43 +229,6 @@ index f9a85ae8be62..9cce8eac6cbc 100644
  };
  
  static int qcom_edp_phy_power_on(struct phy *phy)
-@@ -1115,8 +1149,10 @@ static int qcom_edp_phy_power_on(struct phy *phy)
- 	u8 cfg1;
- 
- 	ret = edp->cfg->ver_ops->com_power_on(edp);
--	if (ret)
-+	if (ret) {
-+		dev_err(edp->dev, "DEBUG: com_power_on (CMN_STATUS) failed: %d\n", ret);
- 		return ret;
-+	}
- 
- 	ret = edp->cfg->ver_ops->com_ldo_config(edp);
- 	if (ret)
-@@ -1169,8 +1205,10 @@ static int qcom_edp_phy_power_on(struct phy *phy)
- 	writel(0x09, edp->edp + DP_PHY_CFG);
- 
- 	ret = edp->cfg->ver_ops->com_resetsm_cntrl(edp);
--	if (ret)
-+	if (ret) {
-+		dev_err(edp->dev, "DEBUG: com_resetsm_cntrl (C_READY) failed: %d\n", ret);
- 		return ret;
-+	}
- 
- 	writel(0x19, edp->edp + DP_PHY_CFG);
- 	writel(0x1f, edp->tx0 + TXn_HIGHZ_DRVR_EN);
-@@ -1229,8 +1267,11 @@ static int qcom_edp_phy_power_on(struct phy *phy)
- 
- 	ret = readl_poll_timeout(edp->edp + (edp->cfg->phy_status_reg ?: DP_PHY_STATUS),
- 				 val, val & BIT(1), 500, 10000);
--	if (ret)
-+	if (ret) {
-+		dev_err(edp->dev, "DEBUG: PHY_STATUS @%#x failed: %d (val=%#x)\n",
-+			edp->cfg->phy_status_reg ?: DP_PHY_STATUS, ret, val);
- 		return ret;
-+	}
- 
- 	clk_set_rate(edp->dp_link_hw.clk, edp->dp_opts.link_rate * 100000);
- 	clk_set_rate(edp->dp_pixel_hw.clk, pixel_freq);
 diff --git a/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h b/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h
 index 008b17222a8d..dfbb2549ab1e 100644
 --- a/drivers/phy/qualcomm/phy-qcom-qmp-qserdes-dp-com-v8.h
